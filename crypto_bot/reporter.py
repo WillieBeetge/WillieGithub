@@ -29,7 +29,9 @@ def _fmt_price(value: float) -> str:
     return f"${value:.8f}"
 
 
-def format_report(predictions: list[Prediction], generated_at: datetime | None = None) -> str:
+def format_report(
+    predictions: list[Prediction], generated_at: datetime | None = None
+) -> str:
     when = generated_at or _timestamp_sast()
     lines = [
         "=" * 72,
@@ -44,6 +46,10 @@ def format_report(predictions: list[Prediction], generated_at: datetime | None =
             [
                 f"#{p.rank}  {p.symbol}  ({p.name})",
                 f"    Spot: {_fmt_price(p.price_usd)}  |  Pred. gain: +{p.predicted_gain_pct}%",
+                f"    Probability: {p.probability_pct:.0f}% overall  |  "
+                f"TP1 {p.probability_tp1_pct:.0f}%  |  TP2 {p.probability_tp2_pct:.0f}%",
+                f"    Best time to trade: {p.best_time_sast}",
+                f"      ({p.best_time_reason})",
                 f"    TRADE SUGGESTION (long)",
                 f"      Entry : {_fmt_price(p.entry_usd)}  ({p.entry_note})",
                 f"      TP1   : {_fmt_price(p.tp1_usd)}  (R:R {p.risk_reward_tp1:.2f})",
@@ -60,7 +66,9 @@ def format_report(predictions: list[Prediction], generated_at: datetime | None =
     return "\n".join(lines)
 
 
-def print_report(predictions: list[Prediction], generated_at: datetime | None = None) -> None:
+def print_report(
+    predictions: list[Prediction], generated_at: datetime | None = None
+) -> None:
     when = generated_at or _timestamp_sast()
     table = Table(
         title=f"Top 5 crypto setups — {when.strftime('%Y-%m-%d %H:%M %Z')}",
@@ -68,29 +76,31 @@ def print_report(predictions: list[Prediction], generated_at: datetime | None = 
     )
     table.add_column("#", justify="right", style="bold")
     table.add_column("Coin")
+    table.add_column("Prob%", justify="right")
     table.add_column("Entry", justify="right")
     table.add_column("TP1", justify="right")
     table.add_column("TP2", justify="right")
     table.add_column("SL", justify="right")
-    table.add_column("R:R", justify="right")
-    table.add_column("Gain", justify="right")
+    table.add_column("Best time (SAST)")
 
     for p in predictions:
         table.add_row(
             str(p.rank),
             f"{p.symbol}\n{p.name}",
+            f"{p.probability_pct:.0f}%\nTP1 {p.probability_tp1_pct:.0f}%",
             _fmt_price(p.entry_usd),
             _fmt_price(p.tp1_usd),
             _fmt_price(p.tp2_usd),
             _fmt_price(p.sl_usd),
-            f"{p.risk_reward_tp1:.1f} / {p.risk_reward_tp2:.1f}",
-            f"+{p.predicted_gain_pct}%",
+            p.best_time_sast,
         )
 
     console.print(
         Panel.fit(
-            "Heuristic long setups with Entry / TP1 / TP2 / SL (10–30% upside band).\n"
-            "[bold red]Not financial advice.[/] Past patterns do not guarantee future results.",
+            "Heuristic long setups with Entry / TP1 / TP2 / SL, probability %, "
+            "and best SAST trade window.\n"
+            "[bold red]Not financial advice.[/] Probabilities are model estimates, "
+            "not guarantees.",
             title="SA Crypto Prediction Bot",
         )
     )
@@ -98,11 +108,17 @@ def print_report(predictions: list[Prediction], generated_at: datetime | None = 
 
     for p in predictions:
         console.print(
-            f"  [bold]#{p.rank} {p.symbol}[/] entry note: {p.entry_note} — {p.reason}"
+            f"  [bold]#{p.rank} {p.symbol}[/] "
+            f"prob {p.probability_pct:.0f}% (TP1 {p.probability_tp1_pct:.0f}% / "
+            f"TP2 {p.probability_tp2_pct:.0f}%) — {p.best_time_sast}"
         )
+        console.print(f"    {p.best_time_reason}")
+        console.print(f"    {p.entry_note} — {p.reason}")
 
 
-def save_report(predictions: list[Prediction], generated_at: datetime | None = None) -> Path:
+def save_report(
+    predictions: list[Prediction], generated_at: datetime | None = None
+) -> Path:
     when = generated_at or _timestamp_sast()
     stamp = when.strftime("%Y%m%d_%H%M%S")
     base = config.OUTPUT_DIR / f"predictions_{stamp}"
@@ -111,7 +127,13 @@ def save_report(predictions: list[Prediction], generated_at: datetime | None = N
         "generated_at": when.isoformat(),
         "timezone": config.TIMEZONE,
         "target_gain_band_pct": [config.MIN_GAIN_PCT, config.MAX_GAIN_PCT],
-        "disclaimer": "Not financial advice. For educational/automation purposes only.",
+        "trade_windows_sast": {
+            "primary": config.PRIMARY_TRADE_WINDOW_SAST,
+            "secondary": config.SECONDARY_TRADE_WINDOW_SAST,
+        },
+        "disclaimer": (
+            "Not financial advice. Probability % is a heuristic estimate only."
+        ),
         "predictions": [p.to_dict() for p in predictions],
     }
 
@@ -120,8 +142,8 @@ def save_report(predictions: list[Prediction], generated_at: datetime | None = N
     latest_json = config.OUTPUT_DIR / "latest.json"
     latest_txt = config.OUTPUT_DIR / "latest.txt"
 
-    json_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     text = format_report(predictions, when)
+    json_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     txt_path.write_text(text, encoding="utf-8")
     latest_json.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     latest_txt.write_text(text, encoding="utf-8")

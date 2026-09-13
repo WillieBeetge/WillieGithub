@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """SA Crypto Prediction Bot — CLI entrypoint.
 
-Runs a technical screen over liquid cryptocurrencies and prints the top 5
-setups with a modelled 10–30% upside band. Can run once or on a schedule at
-06:00 and 16:00 Africa/Johannesburg.
+Screens liquid cryptocurrencies and prints the top 5 setups with a modelled
+10–30% upside band, Entry/TP1/TP2/SL, probability %, and best SAST trade time.
+Can run once or on a schedule at 06:00 and 16:00 Africa/Johannesburg.
 """
 
 from __future__ import annotations
@@ -28,7 +28,8 @@ def _configure_logging(verbose: bool) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Predict top 5 tradeable cryptos with a possible 10–30% gain. "
+            "Predict top 5 tradeable cryptos with a possible 10–30% gain, "
+            "probability %, and best SAST trade time. "
             "Schedule: 06:00 and 16:00 South African time."
         )
     )
@@ -51,14 +52,12 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if not args.once and not args.schedule:
-        # Default: run once (handy for testing); mention schedule in help
         args.once = True
 
     _configure_logging(args.verbose)
 
     try:
         if args.schedule:
-            # Optional immediate run so the process is useful on start
             logging.getLogger(__name__).info(
                 "Running an initial cycle, then waiting for schedule…"
             )

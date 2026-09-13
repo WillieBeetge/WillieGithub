@@ -19,7 +19,7 @@ class CoinGeckoClient:
         self.session.headers.update(
             {
                 "Accept": "application/json",
-                "User-Agent": "sa-crypto-prediction-bot/1.0",
+                "User-Agent": "sa-crypto-prediction-bot/1.1",
             }
         )
 

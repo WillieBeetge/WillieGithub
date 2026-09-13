@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 def _prefilter_ids(markets: list[dict]) -> list[str]:
     """Pick the most promising liquid names before chart fetches (rate-limit friendly)."""
-    eligible = []
+    eligible: list[tuple[float, str]] = []
     for m in markets:
         vol = float(m.get("total_volume") or 0)
         price = float(m.get("current_price") or 0)
@@ -22,11 +22,9 @@ def _prefilter_ids(markets: list[dict]) -> list[str]:
             continue
         change_24h = float(m.get("price_change_percentage_24h") or 0)
         change_7d = float(m.get("price_change_percentage_7d_in_currency") or 0)
-        # Prefer liquid names that are not already vertical parabolic moves
         priority = vol + max(change_24h, 0) * 1e6 - max(change_7d - 40, 0) * 5e6
         eligible.append((priority, m["id"]))
     eligible.sort(reverse=True)
-    # Charts are rate-limited; score a focused shortlist then take top 5
     return [coin_id for _, coin_id in eligible[:12]]
 
 
@@ -50,9 +48,10 @@ def run_once(print_output: bool = True) -> list[Prediction]:
             if pred:
                 scored.append(pred)
                 logger.info(
-                    "Scored %s: gain≈%.1f%% score=%.3f",
+                    "Scored %s: gain≈%.1f%% prob≈%.0f%% score=%.3f",
                     pred.symbol,
                     pred.predicted_gain_pct,
+                    pred.probability_pct,
                     pred.score,
                 )
         except Exception:
