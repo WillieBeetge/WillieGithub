@@ -43,8 +43,12 @@ def format_report(predictions: list[Prediction], generated_at: datetime | None =
         lines.extend(
             [
                 f"#{p.rank}  {p.symbol}  ({p.name})",
-                f"    Price: {_fmt_price(p.price_usd)}  |  Target: {_fmt_price(p.target_price_usd)}  "
-                f"(+{p.predicted_gain_pct}%)",
+                f"    Spot: {_fmt_price(p.price_usd)}  |  Pred. gain: +{p.predicted_gain_pct}%",
+                f"    TRADE SUGGESTION (long)",
+                f"      Entry : {_fmt_price(p.entry_usd)}  ({p.entry_note})",
+                f"      TP1   : {_fmt_price(p.tp1_usd)}  (R:R {p.risk_reward_tp1:.2f})",
+                f"      TP2   : {_fmt_price(p.tp2_usd)}  (R:R {p.risk_reward_tp2:.2f})",
+                f"      SL    : {_fmt_price(p.sl_usd)}",
                 f"    Confidence: {p.confidence:.0%}  |  Score: {p.score:.3f}",
                 f"    24h: {p.change_24h_pct:+.2f}%  |  7d: {p.change_7d_pct:+.2f}%  "
                 f"|  RSI: {p.rsi_14}  |  Vol: {p.volatility_14d_pct}%",
@@ -64,31 +68,38 @@ def print_report(predictions: list[Prediction], generated_at: datetime | None = 
     )
     table.add_column("#", justify="right", style="bold")
     table.add_column("Coin")
-    table.add_column("Price USD", justify="right")
-    table.add_column("Pred. gain", justify="right")
-    table.add_column("Target", justify="right")
-    table.add_column("Conf.", justify="right")
-    table.add_column("Why")
+    table.add_column("Entry", justify="right")
+    table.add_column("TP1", justify="right")
+    table.add_column("TP2", justify="right")
+    table.add_column("SL", justify="right")
+    table.add_column("R:R", justify="right")
+    table.add_column("Gain", justify="right")
 
     for p in predictions:
         table.add_row(
             str(p.rank),
             f"{p.symbol}\n{p.name}",
-            _fmt_price(p.price_usd),
+            _fmt_price(p.entry_usd),
+            _fmt_price(p.tp1_usd),
+            _fmt_price(p.tp2_usd),
+            _fmt_price(p.sl_usd),
+            f"{p.risk_reward_tp1:.1f} / {p.risk_reward_tp2:.1f}",
             f"+{p.predicted_gain_pct}%",
-            _fmt_price(p.target_price_usd),
-            f"{p.confidence:.0%}",
-            p.reason,
         )
 
     console.print(
         Panel.fit(
-            "Heuristic technical screen for liquid coins with a modelled 10–30% upside band.\n"
+            "Heuristic long setups with Entry / TP1 / TP2 / SL (10–30% upside band).\n"
             "[bold red]Not financial advice.[/] Past patterns do not guarantee future results.",
             title="SA Crypto Prediction Bot",
         )
     )
     console.print(table)
+
+    for p in predictions:
+        console.print(
+            f"  [bold]#{p.rank} {p.symbol}[/] entry note: {p.entry_note} — {p.reason}"
+        )
 
 
 def save_report(predictions: list[Prediction], generated_at: datetime | None = None) -> Path:

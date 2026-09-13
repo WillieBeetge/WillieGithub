@@ -48,7 +48,13 @@ Each run writes:
 - `predictions/predictions_YYYYMMDD_HHMMSS.txt`
 - `predictions/latest.json` and `predictions/latest.txt` (always the newest)
 
-Example fields per coin: symbol, price, predicted gain %, target price, confidence, RSI, volatility, and a short reason.
+Example fields per coin: symbol, spot price, **Entry / TP1 / TP2 / SL**, risk:reward, predicted gain %, confidence, RSI, volatility, and a short reason.
+
+Trade levels (long bias):
+- **Entry** — market if near recent low, otherwise a small limit pullback
+- **TP1** — first take-profit (~45% of modelled move)
+- **TP2** — full modelled target (10–30% band)
+- **SL** — stop under recent structure / volatility buffer
 
 ## How scoring works
 
