@@ -20,6 +20,13 @@ class Prediction:
     price_usd: float
     predicted_gain_pct: float
     target_price_usd: float
+    entry_usd: float
+    tp1_usd: float
+    tp2_usd: float
+    sl_usd: float
+    entry_note: str
+    risk_reward_tp1: float
+    risk_reward_tp2: float
     confidence: float
     score: float
     reason: str
@@ -31,6 +38,69 @@ class Prediction:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+def _round_price(value: float) -> float:
+    if value >= 100:
+        return round(value, 2)
+    if value >= 1:
+        return round(value, 4)
+    if value >= 0.01:
+        return round(value, 6)
+    return round(value, 8)
+
+
+def _trade_levels(
+    price: float,
+    predicted_gain_pct: float,
+    close: pd.Series,
+    vol_ann_pct: float,
+) -> dict[str, float | str]:
+    """Build long-biased Entry / TP1 / TP2 / SL from price action + vol."""
+    recent = close.tail(14)
+    recent_low = float(recent.min()) if not recent.empty else price * 0.95
+
+    # Daily-ish move proxy from annualized vol (vol / sqrt(365))
+    daily_move_pct = max(vol_ann_pct / (365**0.5), 1.5)
+    pullback_pct = min(max(daily_move_pct * 0.35, 0.8), 4.0)
+    stop_pct = min(max(daily_move_pct * 1.1, 3.0), 12.0)
+
+    # Prefer buying a small dip; if already near the range low, enter at market.
+    near_low = price <= recent_low * 1.03
+    if near_low:
+        entry = price
+        entry_note = "market entry (near recent low)"
+    else:
+        entry = price * (1 - pullback_pct / 100.0)
+        entry = max(entry, recent_low * 1.005)
+        entry_note = f"limit buy ~{pullback_pct:.1f}% below spot"
+
+    tp1_pct = max(predicted_gain_pct * 0.45, config.MIN_GAIN_PCT * 0.6)
+    tp2_pct = predicted_gain_pct
+    tp1 = entry * (1 + tp1_pct / 100.0)
+    tp2 = entry * (1 + tp2_pct / 100.0)
+
+    # SL under recent structure, floored by volatility stop distance
+    structure_sl = recent_low * 0.985
+    vol_sl = entry * (1 - stop_pct / 100.0)
+    sl = min(structure_sl, vol_sl)
+    # Keep SL meaningfully below entry but not absurd
+    sl = min(sl, entry * 0.97)
+    sl = max(sl, entry * 0.88)
+
+    risk = entry - sl
+    rr1 = (tp1 - entry) / risk if risk > 0 else 0.0
+    rr2 = (tp2 - entry) / risk if risk > 0 else 0.0
+
+    return {
+        "entry_usd": _round_price(entry),
+        "tp1_usd": _round_price(tp1),
+        "tp2_usd": _round_price(tp2),
+        "sl_usd": _round_price(sl),
+        "entry_note": entry_note,
+        "risk_reward_tp1": round(rr1, 2),
+        "risk_reward_tp2": round(rr2, 2),
+    }
 
 
 def _series_from_chart(chart: dict[str, Any], key: str) -> pd.Series:
@@ -138,7 +208,9 @@ def score_coin(market: dict[str, Any], chart: dict[str, Any]) -> Prediction | No
         predicted_gain = min(max(predicted_gain, 18.0), config.MAX_GAIN_PCT)
 
     confidence = round(min(0.35 + raw * 0.55, 0.90), 2)
-    target = price * (1 + predicted_gain / 100.0)
+    predicted_gain = round(predicted_gain, 1)
+    levels = _trade_levels(price, predicted_gain, close, vol)
+    target = float(levels["tp2_usd"])
 
     reasons: list[str] = []
     if surge >= 1.25:
@@ -161,9 +233,16 @@ def score_coin(market: dict[str, Any], chart: dict[str, Any]) -> Prediction | No
         symbol=str(market.get("symbol", "")).upper(),
         name=str(market.get("name", "")),
         coin_id=str(market.get("id", "")),
-        price_usd=round(price, 8 if price < 1 else 4),
-        predicted_gain_pct=round(predicted_gain, 1),
-        target_price_usd=round(target, 8 if target < 1 else 4),
+        price_usd=_round_price(price),
+        predicted_gain_pct=predicted_gain,
+        target_price_usd=target,
+        entry_usd=float(levels["entry_usd"]),
+        tp1_usd=float(levels["tp1_usd"]),
+        tp2_usd=float(levels["tp2_usd"]),
+        sl_usd=float(levels["sl_usd"]),
+        entry_note=str(levels["entry_note"]),
+        risk_reward_tp1=float(levels["risk_reward_tp1"]),
+        risk_reward_tp2=float(levels["risk_reward_tp2"]),
         confidence=confidence,
         score=round(raw, 4),
         reason="; ".join(reasons),
