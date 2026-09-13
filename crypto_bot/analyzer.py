@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
@@ -27,6 +29,11 @@ class Prediction:
     entry_note: str
     risk_reward_tp1: float
     risk_reward_tp2: float
+    probability_pct: float
+    probability_tp1_pct: float
+    probability_tp2_pct: float
+    best_time_sast: str
+    best_time_reason: str
     confidence: float
     score: float
     reason: str
@@ -55,17 +62,15 @@ def _trade_levels(
     predicted_gain_pct: float,
     close: pd.Series,
     vol_ann_pct: float,
-) -> dict[str, float | str]:
+) -> dict[str, float | str | bool]:
     """Build long-biased Entry / TP1 / TP2 / SL from price action + vol."""
     recent = close.tail(14)
     recent_low = float(recent.min()) if not recent.empty else price * 0.95
 
-    # Daily-ish move proxy from annualized vol (vol / sqrt(365))
     daily_move_pct = max(vol_ann_pct / (365**0.5), 1.5)
     pullback_pct = min(max(daily_move_pct * 0.35, 0.8), 4.0)
     stop_pct = min(max(daily_move_pct * 1.1, 3.0), 12.0)
 
-    # Prefer buying a small dip; if already near the range low, enter at market.
     near_low = price <= recent_low * 1.03
     if near_low:
         entry = price
@@ -80,11 +85,9 @@ def _trade_levels(
     tp1 = entry * (1 + tp1_pct / 100.0)
     tp2 = entry * (1 + tp2_pct / 100.0)
 
-    # SL under recent structure, floored by volatility stop distance
     structure_sl = recent_low * 0.985
     vol_sl = entry * (1 - stop_pct / 100.0)
     sl = min(structure_sl, vol_sl)
-    # Keep SL meaningfully below entry but not absurd
     sl = min(sl, entry * 0.97)
     sl = max(sl, entry * 0.88)
 
@@ -100,7 +103,85 @@ def _trade_levels(
         "entry_note": entry_note,
         "risk_reward_tp1": round(rr1, 2),
         "risk_reward_tp2": round(rr2, 2),
+        "near_low": near_low,
     }
+
+
+def _probability_pcts(
+    raw_score: float,
+    rsi: float,
+    surge: float,
+    bounce: float,
+    rr1: float,
+    predicted_gain_pct: float,
+) -> tuple[float, float, float]:
+    """Heuristic % chance of a favourable outcome (not a calibrated forecast)."""
+    base = 28.0 + raw_score * 42.0  # roughly 28–70 from score alone
+
+    if 35 <= rsi <= 55:
+        base += 6.0
+    elif rsi < 35:
+        base += 4.0
+    elif rsi > 70:
+        base -= 8.0
+
+    if surge >= 1.25:
+        base += 5.0
+    if bounce < 10:
+        base += 4.0
+    elif bounce > 25:
+        base -= 6.0
+
+    if rr1 >= 2.0:
+        base += 3.0
+
+    stretch = max(predicted_gain_pct - 15.0, 0.0) * 0.35
+    overall = min(max(base - stretch * 0.35, 18.0), 78.0)
+    tp1 = min(max(overall + 8.0, 22.0), 82.0)
+    tp2 = min(max(overall - 12.0 - stretch, 12.0), 65.0)
+    return round(overall, 1), round(tp1, 1), round(tp2, 1)
+
+
+def _best_trade_time(
+    entry_note: str,
+    near_low: bool,
+    vol_ann_pct: float,
+    volume_24h: float,
+) -> tuple[str, str]:
+    """Recommend a SAST window when fills/slippage are typically better."""
+    now = datetime.now(ZoneInfo(config.TIMEZONE))
+    hour = now.hour
+
+    primary = config.PRIMARY_TRADE_WINDOW_SAST
+    secondary = config.SECONDARY_TRADE_WINDOW_SAST
+    needs_deep_book = vol_ann_pct >= 90 or volume_24h < 20_000_000
+
+    if 16 <= hour < 20:
+        window = f"Now–20:00 SAST (in prime window) · else next {primary}"
+        reason = (
+            "Currently inside the prime SAST liquidity window (EU/US overlap). "
+            "Act on the plan now; otherwise wait for the next 16:00–20:00 SAST slot."
+        )
+    elif 8 <= hour < 11:
+        window = f"Now–11:00 SAST (London open) · or wait for {primary}"
+        reason = (
+            "London-open liquidity is decent in SAST morning. "
+            f"For the strongest book, still favour {primary}."
+        )
+    elif near_low or "market entry" in entry_note:
+        window = primary if needs_deep_book else f"{primary} (or {secondary})"
+        reason = (
+            "Market-style entry — prefer EU/US overlap for tighter spreads "
+            f"({primary}); London open ({secondary}) is a solid backup."
+        )
+    else:
+        window = f"Place limit now; expect fill {primary}"
+        reason = (
+            "Limit pullback entry can sit anytime, but fills and follow-through "
+            f"are usually strongest during {primary} (EU/US overlap)."
+        )
+
+    return window, reason
 
 
 def _series_from_chart(chart: dict[str, Any], key: str) -> pd.Series:
@@ -175,10 +256,8 @@ def score_coin(market: dict[str, Any], chart: dict[str, Any]) -> Prediction | No
     bounce = _distance_from_low_pct(close)
     surge = _volume_surge(volume)
 
-    # Prefer coins that can realistically move 10–30%: enough volatility,
-    # not already extended, with constructive short-term momentum / volume.
-    volatility_fit = 1.0 - min(abs(vol - 80.0) / 80.0, 1.0)  # sweet spot ~ mid/high vol
-    rsi_fit = 1.0 - min(abs(rsi - 45.0) / 45.0, 1.0)  # prefer mid RSI, room to run
+    volatility_fit = 1.0 - min(abs(vol - 80.0) / 80.0, 1.0)
+    rsi_fit = 1.0 - min(abs(rsi - 45.0) / 45.0, 1.0)
     not_extended = max(0.0, 1.0 - bounce / 35.0)
     momentum = 0.0
     if change_24h > 0:
@@ -197,11 +276,9 @@ def score_coin(market: dict[str, Any], chart: dict[str, Any]) -> Prediction | No
         + 0.12 * volume_score
     )
 
-    # Map score into a predicted gain inside the requested 10–30% band.
     predicted_gain = config.MIN_GAIN_PCT + raw * (
         config.MAX_GAIN_PCT - config.MIN_GAIN_PCT
     )
-    # Soften extreme volatility into the upper band, dampen dead coins.
     if vol < 40:
         predicted_gain = min(predicted_gain, 15.0)
     if vol > 120:
@@ -211,6 +288,22 @@ def score_coin(market: dict[str, Any], chart: dict[str, Any]) -> Prediction | No
     predicted_gain = round(predicted_gain, 1)
     levels = _trade_levels(price, predicted_gain, close, vol)
     target = float(levels["tp2_usd"])
+    near_low = bool(levels["near_low"])
+
+    prob_overall, prob_tp1, prob_tp2 = _probability_pcts(
+        raw_score=raw,
+        rsi=rsi,
+        surge=surge,
+        bounce=bounce,
+        rr1=float(levels["risk_reward_tp1"]),
+        predicted_gain_pct=predicted_gain,
+    )
+    best_time, best_reason = _best_trade_time(
+        entry_note=str(levels["entry_note"]),
+        near_low=near_low,
+        vol_ann_pct=vol,
+        volume_24h=volume_24h,
+    )
 
     reasons: list[str] = []
     if surge >= 1.25:
@@ -243,6 +336,11 @@ def score_coin(market: dict[str, Any], chart: dict[str, Any]) -> Prediction | No
         entry_note=str(levels["entry_note"]),
         risk_reward_tp1=float(levels["risk_reward_tp1"]),
         risk_reward_tp2=float(levels["risk_reward_tp2"]),
+        probability_pct=prob_overall,
+        probability_tp1_pct=prob_tp1,
+        probability_tp2_pct=prob_tp2,
+        best_time_sast=best_time,
+        best_time_reason=best_reason,
         confidence=confidence,
         score=round(raw, 4),
         reason="; ".join(reasons),
